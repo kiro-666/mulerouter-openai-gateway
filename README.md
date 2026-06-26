@@ -133,8 +133,8 @@ curl $HOST/v1beta/models/nano-banana-2:generateContent \
 | --- | --- | --- |
 | `prompt` | `prompt` | `prompt` |
 | `n` | `n` | fans out to N tasks (max 4) |
-| `size` | `size` | → `aspect_ratio` (if not given) |
-| `quality` | `quality` | → `resolution` (if not given) |
+| `size` | `size` | → `aspect_ratio` (shape) **and** `resolution` (longest side: ≥3000→4K, ≥1500→2K, else 1K) |
+| `quality` | `quality` | ignored (Google models have no quality param) |
 | `response_format` | shapes output | shapes output |
 | — | — | `aspect_ratio`, `resolution`, `web_search` (nano-banana-2) pass through |
 

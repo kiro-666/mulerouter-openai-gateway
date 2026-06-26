@@ -160,9 +160,16 @@ function sizeToAspectRatio(size) {
   return SIZE_TO_ASPECT[size] || null;
 }
 
-function qualityToResolution(quality, model) {
-  if (!quality || quality === "auto") return null;
-  if (quality === "high") return model.resolutions.includes("4K") ? "2K" : "2K"; // keep 2K; pass explicit resolution for 4K
+// Resolution is a SIZE concept (longest-side tier), NOT a quality one.
+// Google nano-banana models have no "quality" param; pick 1K/2K/4K from the
+// requested pixel size. Returns null for non-pixel sizes (e.g. "auto").
+function sizeToResolution(size, model) {
+  if (!size || typeof size !== "string") return null;
+  const match = size.match(/^(\d+)\s*x\s*(\d+)$/i);
+  if (!match) return null;
+  const longest = Math.max(parseInt(match[1], 10), parseInt(match[2], 10));
+  if (longest >= 3000) return model.resolutions.includes("4K") ? "4K" : "2K";
+  if (longest >= 1500) return "2K";
   return "1K";
 }
 
@@ -181,7 +188,7 @@ function buildGenerationPayload(modelKey, input) {
   // Google models: aspect_ratio + resolution (+ web_search for nano-banana-2)
   let aspectRatio = input.aspect_ratio || sizeToAspectRatio(input.size) || "1:1";
   if (!m.aspectRatios.includes(aspectRatio)) aspectRatio = "1:1";
-  let resolution = input.resolution || qualityToResolution(input.quality, m) || m.defaultResolution;
+  let resolution = input.resolution || sizeToResolution(input.size, m) || m.defaultResolution;
   if (!m.resolutions.includes(resolution)) resolution = m.defaultResolution;
   const payload = { prompt: input.prompt, aspect_ratio: aspectRatio, resolution };
   if (m.supportsWebSearch && input.web_search !== undefined) {
@@ -591,7 +598,7 @@ async function handleEdits(request, apiKey, config) {
       prompt: input.prompt,
       images: images.slice(0, maxIm),
       aspect_ratio: clampAspect(input.aspect_ratio || sizeToAspectRatio(input.size) || "1:1", m),
-      resolution: clampResolution(input.resolution || qualityToResolution(input.quality, m) || m.defaultResolution, m),
+      resolution: clampResolution(input.resolution || sizeToResolution(input.size, m) || m.defaultResolution, m),
     };
     const { images: out, error } = await runEdit(config.origin, modelKey, apiKey, payload, config);
     if (error) return openaiError(error.status, error.message, error.type);
