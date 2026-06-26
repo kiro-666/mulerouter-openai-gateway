@@ -4,9 +4,9 @@
   "main": "src/worker.js",
   "compatibility_date": "2026-06-26",
   "workers_dev": true,
-  // Polling tuning + optional upstream override (all configurable, no secrets here).
+  // Polling tuning + optional upstream origin override (no secrets here).
   "vars": {
-    "MULEROUTER_BASE_URL": "https://api.mulerouter.ai/vendors/openai/v1/gpt-image-2",
+    "MULEROUTER_API_ORIGIN": "https://api.mulerouter.ai",
     "POLL_INTERVAL_MS": "3000",
     "POLL_MAX_ATTEMPTS": "40"
   },
