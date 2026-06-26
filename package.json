@@ -1,0 +1,16 @@
+{
+  "name": "mulerouter-openai-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OpenAI-compatible gateway for MuleRouter gpt-image-2 — runs on Cloudflare Workers or self-hosted Node/Docker.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

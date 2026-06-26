@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mulerouter-openai-gateway",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-06-26",
+  "workers_dev": true,
+  // Polling tuning + optional upstream override (all configurable, no secrets here).
+  "vars": {
+    "MULEROUTER_BASE_URL": "https://api.mulerouter.ai/vendors/openai/v1/gpt-image-2",
+    "POLL_INTERVAL_MS": "3000",
+    "POLL_MAX_ATTEMPTS": "40"
+  },
+  // Paid plan only: raise the CPU budget so polling + base64 work isn't cut off.
+  // (Free plan CPU is fixed at 10ms — use the Docker/Node target instead.)
+  "limits": {
+    "cpu_ms": 30000
+  }
+}

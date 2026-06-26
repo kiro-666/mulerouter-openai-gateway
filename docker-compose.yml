@@ -1,0 +1,12 @@
+services:
+  gateway:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8787"
+      MULEROUTER_BASE_URL: https://api.mulerouter.ai/vendors/openai/v1/gpt-image-2
+      POLL_INTERVAL_MS: "3000"
+      POLL_MAX_ATTEMPTS: "60"   # self-hosted: no subrequest/CPU caps, so raise it
