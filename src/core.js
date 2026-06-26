@@ -380,22 +380,6 @@ async function toDataUris(items) {
   return out;
 }
 
-// Image inputs -> raw base64 (URLs pass through) for gpt-image-2 edit.
-async function toRawBase64OrUrl(items) {
-  const out = [];
-  for (const it of items) {
-    if (it && typeof it.arrayBuffer === "function") {
-      out.push(arrayBufferToBase64(await it.arrayBuffer()));
-      continue;
-    }
-    const c = coerceImage(it);
-    if (!c) continue;
-    if (c.url) out.push(c.url);
-    else out.push(c.b64);
-  }
-  return out;
-}
-
 // Flatten an OpenAI-style edit request (multipart or JSON) into a single input.
 async function readEditInputs(request) {
   const ct = request.headers.get("content-type") || "";
@@ -634,16 +618,19 @@ async function handleEdits(request, apiKey, config) {
     return shapeOpenAIResponse(out, input.response_format, { "X-Upstream-Model": modelKey });
   }
 
-  // --- gpt-image-2: OpenAI edit (raw base64, optional mask) ---
+  // --- gpt-image-2: OpenAI edit (data URIs/URLs, optional mask) ---
   const gpt = MODELS["gpt-image-2"];
-  const images = await toRawBase64OrUrl(input.imageItems);
+  const images = await toDataUris(input.imageItems);
   if (!images.length) return openaiError(400, "`image` is required.");
 
   let mask = null;
   if (input.maskItem) {
-    mask = typeof input.maskItem.arrayBuffer === "function"
-      ? arrayBufferToBase64(await input.maskItem.arrayBuffer())
-      : input.maskItem;
+    if (typeof input.maskItem.arrayBuffer === "function") {
+      mask = `data:image/png;base64,${arrayBufferToBase64(await input.maskItem.arrayBuffer())}`;
+    } else {
+      const c = coerceImage(input.maskItem);
+      if (c) mask = c.url ? c.url : `data:${c.mime || "image/png"};base64,${c.b64}`;
+    }
   }
 
   const payload = { prompt: input.prompt, images, n: toInt(input.n, 1), size: input.size || "auto", format: "png" };
