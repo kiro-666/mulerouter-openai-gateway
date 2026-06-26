@@ -21,7 +21,7 @@ Accepted `model` aliases: `gpt-image-1`, `gemini-3.1-flash-image-preview`, `gemi
 | Endpoint | Maps to |
 | --- | --- |
 | `POST /v1/images/generations` | any model (chosen via `model`) |
-| `POST /v1/images/edits` | gpt-image-2 |
+| `POST /v1/images/edits` | any model (gpt-image-2 uses `mask`; Google models are instruction-based, up to 14 ref images) |
 | `GET /health` | health / model list |
 
 **Gemini style** (Google-native shape)
@@ -111,6 +111,22 @@ r = c.models.generate_content(model="gemini-3.1-flash-image-preview", contents="
 # r.candidates[0].content.parts[*].inline_data.data
 ```
 
+### Editing (image-to-image)
+
+`POST /v1/images/edits` works for all models. gpt-image-2 supports a `mask`; the Google models are **instruction-based** (no mask) and accept up to 14 reference images (nano-banana-2) / 10 (nano-banana-pro).
+
+```bash
+# OpenAI style — nano-banana-2 edit (multipart file upload)
+curl $HOST/v1/images/edits \
+  -H "Authorization: Bearer $MULEROUTER_KEY" \
+  -F 'model=nano-banana-2' -F 'prompt=add a wizard hat' -F image=@cat.png
+
+# Gemini style — include input image(s) as inlineData; it auto-routes to editing
+curl $HOST/v1beta/models/nano-banana-2:generateContent \
+  -H "x-goog-api-key: $MULEROUTER_KEY" -H "Content-Type: application/json" \
+  -d '{"contents":[{"parts":[{"text":"add a wizard hat"},{"inlineData":{"mimeType":"image/png","data":"<base64>"}}]}],"generationConfig":{"resolution":"2K"}}'
+```
+
 ## Parameter mapping
 
 | OpenAI field | gpt-image-2 | Google models (nano-banana-*) |
@@ -140,4 +156,4 @@ All optional — defaults work out of the box.
 - **Stateless.** No DB/volume — the key is client-supplied and forwarded; restart-safe, horizontally scalable.
 - **Workers target = Paid plan** (Free is capped at 50 subrequests / 10ms CPU). Docker/Node has no such caps.
 - **Quota/balance**: MuleRouter exposes no balance API; check the [console](https://www.mulerouter.ai/app).
-- Image edits are currently routed to gpt-image-2 only. CORS is enabled (`*`) with preflight support.
+- Editing: gpt-image-2 supports `mask`; Google models are instruction-based (no mask), up to 14 reference images. CORS is enabled (`*`) with preflight support.

@@ -326,6 +326,106 @@ async function runGeneration(origin, modelKey, apiKey, input, config) {
   return { images, description };
 }
 
+/* ------------------------------- editing --------------------------------- */
+
+function clampAspect(val, m) {
+  return m.aspectRatios.includes(val) ? val : "1:1";
+}
+function clampResolution(val, m) {
+  return m.resolutions.includes(val) ? val : m.defaultResolution;
+}
+
+// File/blob/string image inputs -> data: URIs (URLs pass through) for Google edit.
+async function toDataUris(items) {
+  const out = [];
+  for (const it of items) {
+    if (it && typeof it.arrayBuffer === "function") {
+      out.push(`data:image/png;base64,${arrayBufferToBase64(await it.arrayBuffer())}`);
+    } else if (typeof it === "string" && it.length) {
+      out.push(it.startsWith("data:") || /^https?:\/\//.test(it) ? it : `data:image/png;base64,${it}`);
+    }
+  }
+  return out;
+}
+
+// File/blob -> raw base64, strings pass through, for gpt-image-2 edit.
+async function toRawBase64OrUrl(items) {
+  const out = [];
+  for (const it of items) {
+    if (it && typeof it.arrayBuffer === "function") {
+      out.push(arrayBufferToBase64(await it.arrayBuffer()));
+    } else if (typeof it === "string" && it.length) {
+      out.push(it);
+    }
+  }
+  return out;
+}
+
+// Flatten an OpenAI-style edit request (multipart or JSON) into a single input.
+async function readEditInputs(request) {
+  const ct = request.headers.get("content-type") || "";
+  const imageItems = [];
+  let maskItem = null;
+  let f;
+  if (ct.includes("multipart/form-data") || ct.includes("application/x-www-form-urlencoded")) {
+    const form = await request.formData();
+    f = {
+      prompt: form.get("prompt"), model: form.get("model"), n: form.get("n"),
+      size: form.get("size"), quality: form.get("quality"),
+      aspect_ratio: form.get("aspect_ratio"), resolution: form.get("resolution"),
+      response_format: form.get("response_format"),
+    };
+    for (const key of ["image", "images"]) for (const v of form.getAll(key)) imageItems.push(v);
+    maskItem = form.get("mask");
+  } else {
+    const body = await request.json();
+    f = {
+      prompt: body.prompt, model: body.model, n: body.n,
+      size: body.size, quality: body.quality,
+      aspect_ratio: body.aspect_ratio, resolution: body.resolution,
+      response_format: body.response_format,
+    };
+    for (const it of [].concat(body.image || body.images || [])) if (it) imageItems.push(it);
+    maskItem = body.mask;
+  }
+  return { ...f, imageItems, maskItem };
+}
+
+// Run an image-edit task (single output) for a Google model.
+async function runEdit(origin, modelKey, apiKey, payload, config) {
+  const m = MODELS[modelKey];
+  const submitUrl = `${origin}${m.pathPrefix}/edit`;
+  const pollUrl = (id) => `${origin}${m.pathPrefix}/edit/${id}`;
+  let task;
+  try {
+    task = await submitTask(submitUrl, apiKey, payload);
+  } catch (e) {
+    return { images: [], error: { status: 502, message: `Failed to submit task: ${e.message}` } };
+  }
+  const id = task?.task_info?.id;
+  if (!id) return { images: [], error: { status: 502, message: "Upstream accepted the request but returned no task id." } };
+  const result = await pollTask(pollUrl(id), apiKey, config);
+  if (!result) return { images: [], error: { status: 504, message: `Image edit timed out while polling upstream (${modelKey}).`, type: "api_error" } };
+  if (result.task_info?.status === "failed") return { images: [], error: { status: 502, message: `Upstream task failed: ${JSON.stringify(result.task_info)}` } };
+  return { images: extractImages(result), description: result.description };
+}
+
+// Pull input images from Gemini contents[].parts[].inlineData -> data: URIs.
+function extractGeminiInputImages(body) {
+  const out = [];
+  const contents = Array.isArray(body?.contents) ? body.contents : [];
+  for (const c of contents) {
+    for (const p of (Array.isArray(c?.parts) ? c.parts : [])) {
+      const d = p?.inlineData || p?.inline_data;
+      if (d && typeof d.data === "string" && d.data.length) {
+        const mime = d.mimeType || d.mime_type || "image/png";
+        out.push(`data:${mime};base64,${d.data}`);
+      }
+    }
+  }
+  return out;
+}
+
 /** Shape upstream images into the OpenAI response, honoring response_format. */
 async function shapeOpenAIResponse(images, responseFormat, extraHeaders) {
   const wantB64 = responseFormat === "b64_json";
@@ -425,20 +525,35 @@ async function handleGeminiGenerate(request, config, requestedModel, modelKey, a
   }
 
   const prompt = extractGeminiPrompt(body);
+  const inputImages = extractGeminiInputImages(body);
   if (!prompt) {
     return geminiError(400, "Request must contain contents[].parts[].text with a prompt.", "INVALID_ARGUMENT");
   }
 
   const g = body.generationConfig || {};
-  const input = {
-    prompt,
-    aspect_ratio: g.aspectRatio || g.aspect_ratio,
-    resolution: g.resolution,
-    web_search: g.webSearch ?? g.web_search,
-    n: 1,
-  };
+  const m = MODELS[modelKey];
+  let images, description, error;
 
-  const { images, description, error } = await runGeneration(config.origin, modelKey, apiKey, input, config);
+  if (inputImages.length) {
+    // Editing: contents include input images (Gemini-native) -> route to edit upstream.
+    const maxIm = modelKey === "nano-banana-2" ? 14 : 10;
+    const payload = {
+      prompt,
+      images: inputImages.slice(0, maxIm),
+      aspect_ratio: clampAspect(g.aspectRatio || g.aspect_ratio || "1:1", m),
+      resolution: clampResolution(g.resolution || m.defaultResolution, m),
+    };
+    ({ images, description, error } = await runEdit(config.origin, modelKey, apiKey, payload, config));
+  } else {
+    ({ images, description, error } = await runGeneration(config.origin, modelKey, apiKey, {
+      prompt,
+      aspect_ratio: g.aspectRatio || g.aspect_ratio,
+      resolution: g.resolution,
+      web_search: g.webSearch ?? g.web_search,
+      n: 1,
+    }, config));
+  }
+
   if (error) {
     const statusStr = error.status === 401 ? "UNAUTHENTICATED" : error.status >= 500 ? "INTERNAL" : "INVALID_ARGUMENT";
     return geminiError(error.status, error.message, statusStr);
@@ -455,71 +570,60 @@ async function handleGeminiGenerate(request, config, requestedModel, modelKey, a
 }
 
 async function handleEdits(request, apiKey, config) {
-  // Image edits are routed to gpt-image-2 (OpenAI) for now.
-  const m = MODELS["gpt-image-2"];
-  const ct = request.headers.get("content-type") || "";
-  let prompt, imageItems, maskItem, n, size, response_format;
+  let input;
+  try {
+    input = await readEditInputs(request);
+  } catch {
+    return openaiError(400, "Request must be multipart/form-data or JSON.");
+  }
+  if (!input.prompt) return openaiError(400, "`prompt` is required.");
 
-  if (ct.includes("multipart/form-data") || ct.includes("application/x-www-form-urlencoded")) {
-    const form = await request.formData();
-    prompt = form.get("prompt");
-    n = form.get("n");
-    size = form.get("size");
-    response_format = form.get("response_format");
-    imageItems = [];
-    for (const key of ["image", "images"]) {
-      for (const v of form.getAll(key)) imageItems.push(v);
-    }
-    maskItem = form.get("mask");
-  } else {
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return openaiError(400, "Request must be multipart/form-data or JSON.");
-    }
-    prompt = body.prompt;
-    n = body.n;
-    size = body.size;
-    response_format = body.response_format;
-    imageItems = [].concat(body.image || body.images || []).filter(Boolean);
-    maskItem = body.mask;
+  const modelKey = input.model ? resolveModel(input.model) : "gpt-image-2";
+  if (!modelKey) return openaiError(400, `Unknown model: '${input.model}'.`);
+
+  // --- Google models: instruction-based edit (data: URIs, no mask) ---
+  if (MODELS[modelKey].style === "google") {
+    const m = MODELS[modelKey];
+    const images = await toDataUris(input.imageItems);
+    if (!images.length) return openaiError(400, "`image` is required.");
+    const maxIm = modelKey === "nano-banana-2" ? 14 : 10;
+    const payload = {
+      prompt: input.prompt,
+      images: images.slice(0, maxIm),
+      aspect_ratio: clampAspect(input.aspect_ratio || sizeToAspectRatio(input.size) || "1:1", m),
+      resolution: clampResolution(input.resolution || qualityToResolution(input.quality, m) || m.defaultResolution, m),
+    };
+    const { images: out, error } = await runEdit(config.origin, modelKey, apiKey, payload, config);
+    if (error) return openaiError(error.status, error.message, error.type);
+    if (!out.length) return openaiError(502, "Upstream completed but returned no images.", "api_error");
+    return shapeOpenAIResponse(out, input.response_format, { "X-Upstream-Model": modelKey });
   }
 
-  if (!prompt) return openaiError(400, "`prompt` is required.");
-
-  const images = [];
-  for (const item of imageItems) {
-    if (item && typeof item.arrayBuffer === "function") {
-      images.push(arrayBufferToBase64(await item.arrayBuffer()));
-    } else if (typeof item === "string" && item.length > 0) {
-      images.push(item);
-    }
-  }
+  // --- gpt-image-2: OpenAI edit (raw base64, optional mask) ---
+  const gpt = MODELS["gpt-image-2"];
+  const images = await toRawBase64OrUrl(input.imageItems);
   if (!images.length) return openaiError(400, "`image` is required.");
 
   let mask = null;
-  if (maskItem) {
-    if (typeof maskItem.arrayBuffer === "function") {
-      mask = arrayBufferToBase64(await maskItem.arrayBuffer());
-    } else if (typeof maskItem === "string") {
-      mask = maskItem;
-    }
+  if (input.maskItem) {
+    mask = typeof input.maskItem.arrayBuffer === "function"
+      ? arrayBufferToBase64(await input.maskItem.arrayBuffer())
+      : input.maskItem;
   }
 
-  const payload = { prompt, images, n: toInt(n, 1), size: size || "auto", format: "png" };
+  const payload = { prompt: input.prompt, images, n: toInt(input.n, 1), size: input.size || "auto", format: "png" };
   if (mask) payload.mask = mask;
 
   let task;
   try {
-    task = await submitTask(`${config.origin}${m.pathPrefix}/edit`, apiKey, payload);
+    task = await submitTask(`${config.origin}${gpt.pathPrefix}/edit`, apiKey, payload);
   } catch (e) {
     return openaiError(502, `Failed to submit task: ${e.message}`);
   }
   const taskId = task?.task_info?.id;
   if (!taskId) return openaiError(502, "Upstream accepted the request but returned no task id.");
 
-  const result = await pollTask(`${config.origin}${m.pathPrefix}/edit/${taskId}`, apiKey, config);
+  const result = await pollTask(`${config.origin}${gpt.pathPrefix}/edit/${taskId}`, apiKey, config);
   if (!result) return openaiError(504, "Image edit timed out while polling upstream.", "api_error");
   if (result.task_info?.status === "failed") {
     return openaiError(502, `Upstream task failed: ${JSON.stringify(result.task_info)}`);
@@ -527,7 +631,7 @@ async function handleEdits(request, apiKey, config) {
 
   const imgs = extractImages(result);
   if (!imgs.length) return openaiError(502, "Upstream completed but returned no images.", "api_error");
-  return shapeOpenAIResponse(imgs, response_format, { "X-Upstream-Model": "gpt-image-2" });
+  return shapeOpenAIResponse(imgs, input.response_format, { "X-Upstream-Model": "gpt-image-2" });
 }
 
 /* --------------------------------- entry --------------------------------- */
