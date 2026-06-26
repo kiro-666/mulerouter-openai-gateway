@@ -394,7 +394,7 @@ async function readEditInputs(request) {
       aspect_ratio: form.get("aspect_ratio"), resolution: form.get("resolution"),
       response_format: form.get("response_format"),
     };
-    for (const key of ["image", "images", "image_url", "image_urls", "file", "files", "input_image"]) for (const v of form.getAll(key)) imageItems.push(v);
+    for (const key of ["image", "images", "image[]", "images[]", "image_url", "image_urls", "file", "files", "input_image"]) for (const v of form.getAll(key)) imageItems.push(v);
     maskItem = form.get("mask");
   } else {
     const body = await request.json();
@@ -404,7 +404,7 @@ async function readEditInputs(request) {
       aspect_ratio: body.aspect_ratio, resolution: body.resolution,
       response_format: body.response_format,
     };
-    for (const key of ["image", "images", "image_url", "image_urls", "file", "files", "input_image"]) for (const it of [].concat(body[key] || [])) if (it) imageItems.push(it);
+    for (const key of ["image", "images", "image[]", "images[]", "image_url", "image_urls", "file", "files", "input_image"]) for (const it of [].concat(body[key] || [])) if (it) imageItems.push(it);
     maskItem = body.mask;
   }
   return { ...f, imageItems, maskItem };
