@@ -30,6 +30,10 @@ No dependencies, no install step:
 # Docker (recommended)
 docker compose up -d --build
 # or: docker build -t gateway . && docker run -p 8787:8787 gateway
+# or pull the CI-published image from GHCR (no local build needed):
+docker run -d -p 8787:8787 --name gateway \
+  -e POLL_MAX_ATTEMPTS=60 \
+  ghcr.io/<your-github-username>/mulerouter-openai-gateway:latest
 
 # Plain Node (>= 18)
 node src/server.js          # or: npm start
