@@ -342,28 +342,56 @@ function clampResolution(val, m) {
   return m.resolutions.includes(val) ? val : m.defaultResolution;
 }
 
-// File/blob/string image inputs -> data: URIs (URLs pass through) for Google edit.
+// Coerce a single image value (string / object) into { url } | { b64, mime }.
+// Files/Blobs are handled by the caller (async). Returns null if unusable, so
+// structured values like {b64_json} / {url} don't get silently dropped.
+function coerceImage(item) {
+  if (typeof item === "string") {
+    const s = item.trim();
+    if (!s) return null;
+    if (/^https?:\/\//i.test(s)) return { url: s };
+    const m = s.match(/^data:([^;,]+)?(?:;base64)?,(.*)$/);
+    if (m) return { b64: m[2], mime: m[1] || "image/png" };
+    return { b64: s, mime: "image/png" }; // assume raw base64
+  }
+  if (item && typeof item === "object") {
+    if (typeof item.url === "string") return { url: item.url };
+    if (typeof item.image_url === "string") return { url: item.image_url };
+    if (typeof item.b64_json === "string") return { b64: item.b64_json, mime: "image/png" };
+    if (typeof item.base64 === "string") return { b64: item.base64, mime: "image/png" };
+    if (typeof item.data === "string") return { b64: item.data, mime: item.mime_type || item.mimeType || "image/png" };
+  }
+  return null;
+}
+
+// Image inputs -> data: URIs (URLs pass through) for Google edit.
 async function toDataUris(items) {
   const out = [];
   for (const it of items) {
     if (it && typeof it.arrayBuffer === "function") {
       out.push(`data:image/png;base64,${arrayBufferToBase64(await it.arrayBuffer())}`);
-    } else if (typeof it === "string" && it.length) {
-      out.push(it.startsWith("data:") || /^https?:\/\//.test(it) ? it : `data:image/png;base64,${it}`);
+      continue;
     }
+    const c = coerceImage(it);
+    if (!c) continue;
+    if (c.url) out.push(c.url);
+    else out.push(`data:${c.mime || "image/png"};base64,${c.b64}`);
   }
   return out;
 }
 
-// File/blob -> raw base64, strings pass through, for gpt-image-2 edit.
+// Image inputs -> raw base64 (URLs pass through) for gpt-image-2 edit.
 async function toRawBase64OrUrl(items) {
   const out = [];
   for (const it of items) {
     if (it && typeof it.arrayBuffer === "function") {
       out.push(arrayBufferToBase64(await it.arrayBuffer()));
-    } else if (typeof it === "string" && it.length) {
-      out.push(it);
+      continue;
     }
+    const c = coerceImage(it);
+    if (!c) continue;
+    if (c.url) out.push(c.url);
+    else out.push(c.b64);
   }
   return out;
 }
@@ -382,7 +410,7 @@ async function readEditInputs(request) {
       aspect_ratio: form.get("aspect_ratio"), resolution: form.get("resolution"),
       response_format: form.get("response_format"),
     };
-    for (const key of ["image", "images"]) for (const v of form.getAll(key)) imageItems.push(v);
+    for (const key of ["image", "images", "image_url", "image_urls", "file", "files", "input_image"]) for (const v of form.getAll(key)) imageItems.push(v);
     maskItem = form.get("mask");
   } else {
     const body = await request.json();
@@ -392,7 +420,7 @@ async function readEditInputs(request) {
       aspect_ratio: body.aspect_ratio, resolution: body.resolution,
       response_format: body.response_format,
     };
-    for (const it of [].concat(body.image || body.images || [])) if (it) imageItems.push(it);
+    for (const key of ["image", "images", "image_url", "image_urls", "file", "files", "input_image"]) for (const it of [].concat(body[key] || [])) if (it) imageItems.push(it);
     maskItem = body.mask;
   }
   return { ...f, imageItems, maskItem };
